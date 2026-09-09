@@ -1,0 +1,47 @@
+# One-time bootstrap: build the Clova Build Agent Windows installer.
+#
+# Runs in this PUBLIC repo (free, unlimited Actions), checking out the PRIVATE
+# ClovaRelease source with SOURCE_REPO_PAT so the source is never made public.
+# Download the "clova-build-agent-installer" artifact and run the .exe on your
+# Windows PC.
+name: Build Clova Build Agent
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout private ClovaRelease source
+        uses: actions/checkout@v4
+        with:
+          repository: MNIKevin202/ClovaRelease
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+
+      - name: Install Rust (MSVC target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: build-agent/agent
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+
+      - name: Build the agent installer (NSIS)
+        working-directory: build-agent/agent
+        run: tauri build
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: clova-build-agent-installer
+          path: build-agent/agent/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
