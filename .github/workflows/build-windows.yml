@@ -1,0 +1,88 @@
+# Builds the Windows installer for a Clova app from its private source repo and
+# uploads it onto the release in *this* repo. Written and maintained by the
+# ClovaRelease desktop app — see windows_ci.rs in that project if you need to
+# change it by hand.
+#
+# Secrets:
+#   SOURCE_REPO_PAT   REQUIRED. Fine-grained PAT with Contents: read on the
+#                     private source repo, so this public repo's Actions can
+#                     check it out. Set via `gh secret set SOURCE_REPO_PAT`.
+name: Build Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "owner/repo of the private source project"
+        required: true
+      source_ref:
+        description: "git ref (tag/branch/sha) to build"
+        required: true
+      version:
+        description: "version being released, without leading v"
+        required: true
+      tag_name:
+        description: "release tag in this repo, e.g. v1.2.3"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout private source repo
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.inputs.source_repo }}
+          ref: ${{ github.event.inputs.source_ref }}
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc
+
+      - name: Ensure release exists (idempotent)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.event.inputs.tag_name }}" --repo "${{ github.repository }}" \
+            || gh release create "${{ github.event.inputs.tag_name }}" \
+                 --repo "${{ github.repository }}" \
+                 --title "v${{ github.event.inputs.version }}" \
+                 --notes "Automated build for v${{ github.event.inputs.version }}." \
+                 --draft
+
+      - name: Upload installer(s) onto the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Don't assume target/ lives under src-tauri/ — that's only true when
+          # src-tauri isn't a Cargo workspace member. When it is (as e.g.
+          # ClovaSuite is), Cargo puts target/ at the workspace root instead, so
+          # a hardcoded src-tauri/target path silently finds nothing even after
+          # a fully successful build. Glob recursively from the repo root for
+          # the standard Tauri bundle layout instead, which works either way.
+          shopt -s nullglob globstar
+          files=(**/release/bundle/**/*.exe **/release/bundle/**/*.msi)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No .exe/.msi found anywhere under **/release/bundle after the build"
+            exit 1
+          fi
+          gh release upload "${{ github.event.inputs.tag_name }}" "${files[@]}" --repo "${{ github.repository }}" --clobber
